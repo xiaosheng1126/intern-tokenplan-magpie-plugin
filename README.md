@@ -89,9 +89,14 @@ sk-xxxxxxxxxxxxxxxx|eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFMyNTYifQ...
 **方法一：脚本自动取**（需要本机装了 ego-browser 并登录过该站）
 
 ```sh
-./tools/get-token.sh                 # 只打印 uaa-token
-./tools/get-token.sh sk-xxxxxxxx     # 打印 sk-xxxxxxxx|eyJ...，直接粘给 magpie
+./tools/get-token.sh                 # 自动从 magpie 找 key，输出 sk-...|eyJ...
+./tools/get-token.sh sk-xxxxxxxx     # 指定 key
+./tools/get-token.sh --token-only    # 只打印 uaa-token
 ```
+
+脚本会从 `~/.config/magpie/providers.json` 里找 `chat` 指向
+`discovery-api.intern-ai.org.cn` 的 provider，取它的 key，再拼上 ego-browser
+登录态里的 `uaa-token`。输出直接粘给 `magpie plugin login intern` 即可。
 
 **方法二：DevTools 手动复制**
 
