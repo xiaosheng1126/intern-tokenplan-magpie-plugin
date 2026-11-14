@@ -49,40 +49,38 @@
 | `auth.usage()` 真实 uaa-token | ✅ 3 个窗口，数字与网页一致 |
 | 过期 uaa-token | ✅ 标记 `X-Magpie-Sign-In: expired` |
 | 无效 API Key | ✅ 401 + 明确中文错误 |
+| uaa-token 自动开通 API Key | ✅ 200，返回明文 `sk-...`，该 key 可调 `/v1/models` |
+| 多账号导入解析 | ✅ 覆盖 `name\|sk-\|uaa`、JSON 对象/数组 |
 
-自检脚本：`node test.mjs`（离线 37 项）；设 `INTERN_UAA` 后追加联网额度测试。
+自检脚本：`node test.mjs`（离线 41 项）；设 `INTERN_UAA` 后追加联网额度测试。
 
 平台不公布 max-output，所以 `limit.output` 取上下文长度。
 
 ## 安装
 
 ```sh
-magpie plugin add /path/to/intern-tokenplan-magpie-plugin
+magpie plugin add github:xiaosheng1126/intern-tokenplan-magpie-plugin
+magpie plugin update
 magpie plugin login intern
 ```
 
-## 登录：一条凭据，两个令牌
+## 登录：只粘 uaa-token 就够
 
-这是本插件最容易踩的坑：**推理和查额度用的是两套不同的凭据**。
+推理和查额度原本是两套凭据（`sk-...` 付推理、`uaa-token` 查额度），但手动去控制台
+建 key 是多余的一步：**只要有 uaa-token，插件会替你开通一把本机的 API Key 并缓存起来。**
 
-| 用途 | 凭据 | 来源 |
-|---|---|---|
-| 推理（chat） | API Key `sk-...` | 平台「API Key」页创建 |
-| 查额度 | `uaa-token`（JWT） | 浏览器 cookie，登录后从 DevTools 复制 |
+`magpie plugin login intern` 选第一个方法，粘 uaa-token 即可：
 
-所以登录时填 **`<API Key>|<uaa-token>`**，用竖线分隔：
+- 插件先 `GET /api/tokenplan/v1/users/validate` 校验登录态，顺手拿到账号名（微信名 / 手机 / 邮箱）
+- 再 `POST /api/tokenplan/v1/keys` 建一把名为 `magpie-<主机名>` 的 key（重名自动 `-2`、`-3`）
+- **明文只在创建时返回一次**，所以立刻写进 `~/.config/magpie/cache/intern-keys.json`（`0600`，
+  按 uaa-token 的 sha256 指纹索引）。同一个 uaa-token 再登录直接复用，不会在控制台堆 key
 
-```
-sk-xxxxxxxxxxxxxxxx|eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFMyNTYifQ...
-```
+第二种方法仍然保留：填 `<API Key>|<uaa-token>`，或用 JSON `{"key":"sk-...","uaa":"eyJ..."}`。
+适合「key 已经在控制台建好、明文也存着」的情况。**只填 API Key 也能推理**，只是额度卡片读不到数字。
 
-也接受 JSON 形式：
-
-```json
-{"key":"sk-...","uaa":"eyJ..."}
-```
-
-**只填 API Key 也能用**——推理正常，只是额度卡片会显示「读不到额度」。
+代价：uaa-token 约 14 天过期，过期后额度卡片会标 `X-Magpie-Sign-In: expired`，
+重新登录一次即可（缓存里的 key 还能继续推理）。
 
 ### 怎么拿 uaa-token
 
@@ -127,9 +125,26 @@ Authorization: sk-...          -> 401 同上
 
 ## 多账号
 
-再执行一次 `magpie plugin login intern` 即可。magpie 把第一个存为 `intern`，
-后续的存为 `intern#xxxxxx`，并对每个账号分别调用 `auth.usage`，
-所以每个账号有自己的卡片和自己的数字。
+两个办法：
+
+**逐个登录**：再执行一次 `magpie plugin login intern`。magpie 把第一个存为 `intern`，
+后续的存为 `intern#xxxxxx`，并对每个账号分别调用 `auth.usage`，每个账号有自己的卡片和数字。
+
+**一次导入**（magpie 登录界面选「Import accounts from a file…」）：每行一个账号，
+
+```
+zygu1g|sk-xxxxxxxx|eyJ0eXBlIjoiSldU...
+sk-yyyyyyyy|eyJ0eXBlIjoiSldU...
+eyJ0eXBlIjoiSldU...
+```
+
+第三行只有 uaa-token，插件会自动开通 key。也接受 JSON 数组：
+
+```json
+[{"name":"zygu1g","key":"sk-...","uaa":"eyJ..."},{"name":"other","uaa":"eyJ..."}]
+```
+
+账号名留空时取平台返回的微信名 / 手机 / 邮箱，保证两个账号不会撞名。
 
 三个账号 = 每月 30000 墨点，但**都得在清零前用掉**（见下）。
 
@@ -196,6 +211,8 @@ Authorization: sk-...          -> 401 同上
 
 - OpenAI 端点：`https://discovery-api.intern-ai.org.cn/v1`
 - Anthropic 端点：`https://discovery-api.intern-ai.org.cn`
+- Key 管理接口：`/api/tokenplan/v1/keys` —— **只认 Cookie `uaa-token=`**，Bearer 会返回
+  `{"code":-10002,"msg":"request is not authenticated"}`
 - 额度接口：`https://discovery.intern-ai.org.cn/api/tokenplan/v1/*`
 - 额度接口的 `Authorization: Bearer <uaa-token>` 是必需的——**只带 cookie 会 401**
 - 额度接口失败有两种形状：`msgCode: "A0211"`（token 过期）和 `code: -10002`（未认证），
@@ -203,7 +220,7 @@ Authorization: sk-...          -> 401 同上
 
 ## 限制
 
-- 额度接口依赖浏览器 cookie 里的 `uaa-token`，没有 OAuth 流程，只能手动粘贴
+- 没有 OAuth 回调流程（SSO 回跳落在纯前端 SPA，兑换参数未公开），只能手动粘 `uaa-token`
 - `uaa-token` 约 14 天过期，需要重新登录
 - 平台不公布 max-output，`limit.output` 用上下文长度代替
 - 墨点没有 USD 汇率，所以 `cost` 恒为 0，额度只走 `auth.usage`

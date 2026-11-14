@@ -10,6 +10,11 @@
 // as `intern` and each later one as `intern#xxxxxx`, and calls auth.usage once
 // per account, so every account gets its own card and its own numbers.
 
+import { createHash, randomUUID } from "node:crypto"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir, hostname } from "node:os"
+import { dirname, join } from "node:path"
+
 const ID = "intern"
 const API_V1 = "https://discovery-api.intern-ai.org.cn/v1"
 const WEB = "https://discovery.intern-ai.org.cn"
@@ -193,6 +198,157 @@ async function webGet(path, uaa) {
   return j?.data ?? j
 }
 
+// ---- accounts ----------------------------------------------------------------
+
+// The API key pays for inference, the uaa-token reads the quota. Asking a person
+// for both is one paste too many: signing in with the uaa-token alone mints an
+// API key named after this computer, and the platform only ever shows a key's
+// plaintext once, at creation, so the minted one is cached by the session it was
+// made for. Signing in again with that session gets the same key back instead of
+// piling another one up in the console.
+const KEY_CACHE = join(homedir(), ".config", "magpie", "cache", "intern-keys.json")
+
+function fpOf(uaa) {
+  return createHash("sha256").update(String(uaa)).digest("hex").slice(0, 16)
+}
+
+function cachedKey(uaa) {
+  try {
+    return String(JSON.parse(readFileSync(KEY_CACHE, "utf8"))[fpOf(uaa)]?.key ?? "")
+  } catch {
+    return ""
+  }
+}
+
+function keepKey(uaa, key, name) {
+  try {
+    let all = {}
+    try {
+      all = JSON.parse(readFileSync(KEY_CACHE, "utf8"))
+    } catch {
+      // no cache yet
+    }
+    all[fpOf(uaa)] = { key, name, created: new Date().toISOString() }
+    mkdirSync(dirname(KEY_CACHE), { recursive: true })
+    writeFileSync(KEY_CACHE, JSON.stringify(all, null, 1), { mode: 0o600 })
+  } catch {
+    // an unwritable cache only costs one more key at the next sign-in
+  }
+}
+
+// The key endpoints take the session as a cookie: a Bearer uaa-token answers
+// {"code":-10002,"msg":"request is not authenticated"} there, though the quota
+// endpoints want the Bearer and refuse a bare cookie.
+async function cookieReq(method, path, uaa, body, headers = {}) {
+  const res = await globalThis.fetch(WEB + path, {
+    method,
+    headers: {
+      Cookie: `uaa-token=${uaa}`,
+      Accept: "application/json",
+      ...(body ? { "content-type": "application/json" } : {}),
+      ...headers,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(15000),
+  })
+  const text = await res.text()
+  let j = null
+  try {
+    j = JSON.parse(text)
+  } catch {
+    j = null
+  }
+  if (res.status === 401 || j?.code === -10002 || j?.msgCode === "A0211") {
+    const e = new Error("uaa-token was turned away")
+    e.expired = true
+    throw e
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (j && j.code !== 0) {
+    const e = new Error(j.msg || `code ${j.code}`)
+    e.code = j.code
+    throw e
+  }
+  return j?.data
+}
+
+// nameOf is what an account is called in magpie's list: the person, not the
+// site, so two accounts never look the same.
+function nameOf(who) {
+  const s = String(who?.wechatName || who?.phone || who?.username || who?.email || who?.ssoUid || "").trim()
+  return s || "intern"
+}
+
+// keyName is this computer's key: magpie-<host>, then magpie-<host>-2 and on when
+// that name is taken.
+async function keyName(uaa) {
+  const base = `magpie-${hostname().split(".")[0]}`.slice(0, 60)
+  let taken = new Set()
+  try {
+    const page = await cookieReq("GET", "/api/tokenplan/v1/keys?page=1&page_size=100", uaa)
+    taken = new Set((page?.items ?? []).map((k) => String(k?.name ?? "")))
+  } catch {
+    // an unreadable list only costs the name check
+  }
+  if (!taken.has(base)) return base
+  for (let i = 2; i < 100; i++) if (!taken.has(`${base}-${i}`)) return `${base}-${i}`
+  return `${base}-${randomUUID().slice(0, 8)}`
+}
+
+// keyFor is the key this session already minted here, else a new one, created
+// under this computer's name.
+async function keyFor(uaa) {
+  const had = cachedKey(uaa)
+  if (had) return had
+  const name = await keyName(uaa)
+  let data
+  try {
+    data = await cookieReq("POST", "/api/tokenplan/v1/keys", uaa, { name }, { "Idempotency-Key": randomUUID() })
+  } catch (e) {
+    if (e?.code === -15108) {
+      throw new Error(`平台上已建好 ${name}，但没返回明文；到「密钥管理」复制一次，用 API Key|uaa-token 登录`)
+    }
+    if (e?.code === -15110) throw new Error("账号的 API Key 已达上限，到「密钥管理」删掉不用的再登录")
+    throw e
+  }
+  const key = String(data?.key ?? "")
+  if (!key) throw new Error(`平台没有返回 ${name} 的明文 key`)
+  keepKey(uaa, key, name)
+  return key
+}
+
+// accountsIn reads the accounts a file's text holds: one per line as
+// name|sk-...|eyJ... (or sk-...|eyJ..., eyJ..., sk-...), or the same as JSON.
+function accountsIn(text) {
+  const s = String(text ?? "").trim()
+  if (!s) return []
+  const one = (o) => {
+    if (typeof o === "string") {
+      const parts = o.split(/[|\t]/).map((x) => x.trim()).filter(Boolean)
+      const key = parts.find((x) => x.startsWith("sk-")) ?? ""
+      const uaa = parts.find((x) => x.startsWith("eyJ")) ?? ""
+      const name = parts.find((x) => x !== key && x !== uaa) ?? ""
+      return { name, key, uaa }
+    }
+    if (!o || typeof o !== "object") return null
+    return {
+      name: String(o.name ?? o.account ?? o.label ?? "").trim(),
+      key: String(o.key ?? o.apiKey ?? o.api_key ?? "").trim(),
+      uaa: String(o.uaa ?? o.uaaToken ?? o.uaa_token ?? o.token ?? "").trim(),
+    }
+  }
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      const j = JSON.parse(s)
+      const got = (Array.isArray(j) ? j : [j]).map(one).filter(Boolean)
+      if (got.length) return got
+    } catch {
+      // not JSON: read it line by line
+    }
+  }
+  return s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map(one).filter(Boolean)
+}
+
 function num(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : 0
@@ -317,6 +473,42 @@ export const InternTokenPlanPlugin = async ({ client } = {}, options) => ({
     provider: ID,
     methods: [
       {
+        // One paste: the uaa-token is what a browser session has, and it is
+        // enough to read this account's quota and to mint the API key inference
+        // needs, so nobody has to go create a key in the console first.
+        type: "api",
+        label: "TokenPlan 登录令牌（uaa-token），自动开通 API Key",
+        prompts: [
+          {
+            type: "text",
+            key: "uaa",
+            message: "粘贴 discovery.intern-ai.org.cn 的 uaa-token（DevTools → Application → Cookies）",
+            placeholder: "eyJ0eXBlIjoiSldU...",
+          },
+        ],
+        async authorize(inputs) {
+          const uaa = String(inputs?.uaa ?? "").trim()
+          if (!uaa) return { type: "failed", error: "没有填 uaa-token" }
+          let who
+          try {
+            who = await webGet("/api/tokenplan/v1/users/validate", uaa)
+          } catch (e) {
+            return {
+              type: "failed",
+              error: e?.expired
+                ? "uaa-token 已失效：先在浏览器重新登录 discovery.intern-ai.org.cn，再复制新的 uaa-token。"
+                : `校验 uaa-token 失败：${e?.message ?? e}`,
+            }
+          }
+          try {
+            const key = await keyFor(uaa)
+            return { type: "success", key: `${key}|${uaa}`, metadata: { accountId: nameOf(who) } }
+          } catch (e) {
+            return { type: "failed", error: `开通 API Key 失败：${e?.message ?? e}` }
+          }
+        },
+      },
+      {
         // One sign-in carries both credentials, because they are two different
         // things: the API key pays for inference, the uaa-token reads the quota.
         type: "api",
@@ -324,6 +516,59 @@ export const InternTokenPlanPlugin = async ({ client } = {}, options) => ({
         placeholder: "sk-...|eyJ0eXBlIjoiSldU...",
       },
     ],
+
+    // "Import accounts from a file…": one account per line, so a handful of
+    // accounts come in at once instead of one sign-in each.
+    importFrom:
+      "每行一个账号：name|sk-...|eyJ...，或 sk-...|eyJ...、eyJ...、sk-...；也接受 JSON（{\"key\":\"sk-...\",\"uaa\":\"eyJ...\"} 或它的数组）。",
+    importFroms: {
+      zh: "每行一个账号：name|sk-...|eyJ...，或 sk-...|eyJ...、eyJ...、sk-...；也接受 JSON（{\"key\":\"sk-...\",\"uaa\":\"eyJ...\"} 或它的数组）。",
+      "zh-TW": "每行一個帳號：name|sk-...|eyJ...，或 sk-...|eyJ...、eyJ...、sk-...；也接受 JSON。",
+      en: "One account per line: name|sk-...|eyJ..., or sk-...|eyJ..., eyJ..., sk-...; JSON ({\"key\":\"sk-...\",\"uaa\":\"eyJ...\"} or a list of them) works too.",
+    },
+    async import(texts) {
+      const out = []
+      for (const text of Array.isArray(texts) ? texts : [texts]) {
+        const list = accountsIn(text)
+        if (!list.length) {
+          out.push({ type: "failed", error: "没读到账号：每行 name|sk-...|eyJ... 或 sk-...|eyJ..." })
+          continue
+        }
+        for (const a of list) {
+          if (!a.key && !a.uaa) {
+            out.push({ type: "failed", error: "这一行既没有 sk- 开头的 API Key，也没有 eyJ 开头的 uaa-token" })
+            continue
+          }
+          let name = a.name
+          if (a.uaa) {
+            try {
+              name = name || nameOf(await webGet("/api/tokenplan/v1/users/validate", a.uaa))
+            } catch (e) {
+              if (!a.key) {
+                out.push({ type: "failed", error: e?.expired ? "uaa-token 已失效" : `校验 uaa-token 失败：${e?.message ?? e}` })
+                continue
+              }
+              // an expired session still leaves the API key usable
+            }
+          }
+          let key = a.key
+          if (!key) {
+            try {
+              key = await keyFor(a.uaa)
+            } catch (e) {
+              out.push({ type: "failed", error: `开通 API Key 失败：${e?.message ?? e}` })
+              continue
+            }
+          }
+          out.push({
+            type: "success",
+            key: a.uaa ? `${key}|${a.uaa}` : key,
+            ...(name ? { metadata: { accountId: name } } : {}),
+          })
+        }
+      }
+      return out
+    },
 
     async usage(getAuth) {
       const auth = await getAuth()
@@ -384,7 +629,7 @@ export const InternTokenPlanPlugin = async ({ client } = {}, options) => ({
 
         return {
           plan,
-          user: who?.wechatName || who?.phone || who?.ssoUid || "intern",
+          user: nameOf(who),
           windows,
           signIn: "renewed",
         }
@@ -436,5 +681,8 @@ export const InternTokenPlanPlugin = async ({ client } = {}, options) => ({
   },
 })
 
-export const _internal = { parseCred, isoOf, num, fmt, modelOf, staticModels, listed, MODELS, byId, ID, API_V1, WEB }
+export const _internal = {
+  parseCred, accountsIn, nameOf, fpOf, cachedKey, keepKey, keyFor, keyName, cookieReq,
+  isoOf, num, fmt, modelOf, staticModels, listed, MODELS, byId, ID, API_V1, WEB, KEY_CACHE,
+}
 export default InternTokenPlanPlugin

@@ -37,6 +37,38 @@ console.log("parseCred");
   }
 }
 
+console.log("accountsIn");
+{
+  const one = _internal.accountsIn("zygu1g|sk-abc|eyJxyz")[0];
+  check("name|key|uaa", one?.name === "zygu1g" && one?.key === "sk-abc" && one?.uaa === "eyJxyz", JSON.stringify(one));
+  const bare = _internal.accountsIn("sk-abc|eyJxyz")[0];
+  check("key|uaa", bare?.name === "" && bare?.key === "sk-abc" && bare?.uaa === "eyJxyz", JSON.stringify(bare));
+  const multi = _internal.accountsIn("a|sk-1|eyJ1\nb|sk-2|eyJ2");
+  check("两行两个账号", multi.length === 2 && multi[1].name === "b", JSON.stringify(multi));
+  const json = _internal.accountsIn('[{"name":"a","key":"sk-1","uaa":"eyJ1"},{"account":"b","apiKey":"sk-2","token":"eyJ2"}]');
+  check("JSON 数组", json.length === 2 && json[1].name === "b" && json[1].uaa === "eyJ2", JSON.stringify(json));
+  const obj = _internal.accountsIn('{"key":"sk-1","uaa":"eyJ1"}');
+  check("JSON 单对象", obj.length === 1 && obj[0].key === "sk-1", JSON.stringify(obj));
+  check("空文本返回空", _internal.accountsIn("  ").length === 0);
+}
+
+console.log("nameOf");
+{
+  check("wechatName 优先", _internal.nameOf({ wechatName: "微信名", phone: "138" }) === "微信名");
+  check("phone 次之", _internal.nameOf({ phone: "138", ssoUid: "u1" }) === "138");
+  check("username/email/ssoUid 兜底", _internal.nameOf({ email: "a@b.c" }) === "a@b.c");
+  check("全空返回 intern", _internal.nameOf({}) === "intern");
+}
+
+console.log("fpOf");
+{
+  const a = _internal.fpOf("eyJxyz");
+  check("16 位 hex", /^[0-9a-f]{16}$/.test(a), a);
+  check("同 token 同指纹", _internal.fpOf("eyJxyz") === a);
+  check("不同 token 不同指纹", _internal.fpOf("eyJxyq") !== a);
+  check("未知 token 无缓存 key", _internal.cachedKey("eyJ-never-signed-in") === "");
+}
+
 console.log("isoOf");
 {
   check("北京时间转 ISO", _internal.isoOf("2026-12-05 00:00:00") === "2026-12-05T00:00:00+08:00");
