@@ -86,6 +86,15 @@ sk-xxxxxxxxxxxxxxxx|eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFMyNTYifQ...
 
 ### 怎么拿 uaa-token
 
+**方法一：脚本自动取**（需要本机装了 ego-browser 并登录过该站）
+
+```sh
+./tools/get-token.sh                 # 只打印 uaa-token
+./tools/get-token.sh sk-xxxxxxxx     # 打印 sk-xxxxxxxx|eyJ...，直接粘给 magpie
+```
+
+**方法二：DevTools 手动复制**
+
 1. 浏览器登录 https://discovery.intern-ai.org.cn
 2. DevTools → Application → Cookies → **`.openxlab.org.cn`**（不是 `discovery.intern-ai.org.cn`）
 3. 复制 `uaa-token` 的值（约 293 字符的 JWT）
@@ -94,6 +103,22 @@ sk-xxxxxxxxxxxxxxxx|eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFMyNTYifQ...
 > 域下只有 `acw_tc` 等无关 cookie。
 
 `uaa-token` 有效期约 14 天，过期后重新登录一次即可。
+
+### 为什么 API Key 读不到额度
+
+实测四种 header 写法全部 401：
+
+```
+Authorization: Bearer sk-...   -> 401 {"msgCode":"A0211","msg":"user token expired"}
+X-API-Key: sk-...              -> 401 同上
+api-key: sk-...                -> 401 {"code":-10002,"msg":"参数错误，请求未认证"}
+Authorization: sk-...          -> 401 同上
+```
+
+额度接口 `/api/tokenplan/v1/credits/balance` 只认**用户登录态**（uaa-token），
+不认 API Key。API Key 只用于 `/v1/chat/completions` 推理。
+
+所以：**推理只用 key 就行，额度必须额外给 uaa-token**。
 
 ## 多账号
 
