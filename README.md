@@ -66,8 +66,11 @@ sk-xxxxxxxxxxxxxxxx|eyJ0eXBlIjoiSldUIiwiYWxnIjoiSFMyNTYifQ...
 ### 怎么拿 uaa-token
 
 1. 浏览器登录 https://discovery.intern-ai.org.cn
-2. DevTools → Application → Cookies → `.discovery.intern-ai.org.cn`
+2. DevTools → Application → Cookies → **`.openxlab.org.cn`**（不是 `discovery.intern-ai.org.cn`）
 3. 复制 `uaa-token` 的值（约 293 字符的 JWT）
+
+> 实测确认：`uaa-token` 挂在 `.openxlab.org.cn` 域下，`discovery.intern-ai.org.cn`
+> 域下只有 `acw_tc` 等无关 cookie。
 
 `uaa-token` 有效期约 14 天，过期后重新登录一次即可。
 

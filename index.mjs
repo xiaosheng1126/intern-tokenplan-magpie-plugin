@@ -156,8 +156,11 @@ function parseCred(raw) {
     .split(/[|\n]/)
     .map((x) => x.trim())
     .filter(Boolean)
-  const key = parts.find((p) => p.startsWith("sk-")) ?? parts[0] ?? ""
-  const uaa = parts.find((p) => p !== key) ?? ""
+  // An API key starts with "sk-", a uaa-token is a JWT starting with "eyJ".
+  // Matching on those prefixes keeps a lone uaa-token from being mistaken for
+  // an API key (which would fail every chat with a confusing 401).
+  const key = parts.find((p) => p.startsWith("sk-")) ?? ""
+  const uaa = parts.find((p) => p.startsWith("eyJ")) ?? parts.find((p) => p !== key) ?? ""
   return { key, uaa }
 }
 

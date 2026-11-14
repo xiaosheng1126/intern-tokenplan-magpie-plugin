@@ -6,6 +6,9 @@
   "main": "./index.mjs",
   "exports": "./index.mjs",
   "files": ["index.mjs", "README.md"],
+  "scripts": {
+    "test": "node test.mjs"
+  },
   "keywords": [
     "opencode",
     "opencode-plugin",
