@@ -31,6 +31,27 @@
 
 `intern-decision-4b` 未收录：它只在 SystemOne 端点应答，不是 chat 协议。
 
+`Atria-Dawn-Preview` 上游可调用，但平台没有公布它的价格，所以插件不暴露它——
+避免出现「用了但不知道花多少墨点」的情况。
+
+## 实测验证（2026-11-14）
+
+用真实账号跑通：
+
+| 项 | 结果 |
+|---|---|
+| `config()` 注册 provider | ✅ 9 个模型，OpenAI / Anthropic 双协议 |
+| `provider.models()` 真实 key | ✅ 返回 9 个（上游 10 个，`Atria-Dawn-Preview` 无价格被过滤） |
+| 非流式 chat | ✅ 200，`content: "好的，已收到。"`，usage 正常 |
+| 流式 chat | ✅ 200，`text/event-stream`，36 个 chunk，含 `[DONE]` |
+| 工具调用 | ✅ 返回 `tool_calls`，参数 `{"city": "北京"}` |
+| Anthropic `/v1/messages` | ✅ 200，thinking + text 块 |
+| `auth.usage()` 真实 uaa-token | ✅ 3 个窗口，数字与网页一致 |
+| 过期 uaa-token | ✅ 标记 `X-Magpie-Sign-In: expired` |
+| 无效 API Key | ✅ 401 + 明确中文错误 |
+
+自检脚本：`node test.mjs`（离线 37 项）；设 `INTERN_UAA` 后追加联网额度测试。
+
 平台不公布 max-output，所以 `limit.output` 取上下文长度。
 
 ## 安装
